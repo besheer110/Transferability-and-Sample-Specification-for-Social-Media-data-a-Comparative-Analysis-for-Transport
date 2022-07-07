@@ -1,0 +1,1632 @@
+Code was done using R programming language
+
+
+# load libraries ----------------------------------------------------------
+remove(list = ls())
+
+install.packages( c("RSQLite", "ggplot2", "plyr", "dbscan","geosphere", "ggmap", "sp", "rgeos", "devtools","rio",
+                      "ggsn","easypackages",  "rworldmap", "lubridate","SnowballC", "OpenStreetMap", "ggsci",
+                      "tm", "twitteR" , "syuzhet", "ROAuth", "wordcloud" , "stringr" , "textcat" , "cld2", "cld3",
+                       "dplyr", "tidytext", "ggwordcloud",   "RSentiment", "gtools","dtw","progress", "tidyverse",
+                      "poweRlaw"))
+
+ 
+lapply(c("RSQLite", "ggplot2", "plyr", "dbscan","geosphere", "ggmap", "sp", "rgeos", "devtools","rio",
+         "ggsn","easypackages",  "rworldmap", "lubridate","SnowballC", "OpenStreetMap", "ggsci",
+         "tm", "twitteR" , "syuzhet", "ROAuth", "wordcloud" , "stringr" , "textcat" , "cld2", "cld3",
+           "dplyr", "tidytext", "ggwordcloud",   "RSentiment", "gtools","dtw","progress", "tidyverse",
+         "poweRlaw"), require, character.only = TRUE)
+
+
+ 
+# stdbscan ----------------------------------------------------------------
+
+stdbscan = function (data, eps, eps2,data_spasial, data_temporal,  minpts = 7, seeds = TRUE, countmode = 1:nrow(data)) {  
+  data_spasial <- as.matrix(data_spasial)
+  data_temporal <- as.matrix(data_temporal)
+  n <- nrow(data_spasial)
+  
+  classn <- cv <- integer(n)
+  isseed <- logical(n)
+  cn <- integer(1)
+  
+  for (i in 1:n) {
+    if (i %in% countmode) 
+       unclass <- (1:n)[cv < 1]
+    
+    if (cv[i] == 0) {
+      reachables <- intersect(unclass[data_spasial[i, unclass] <= eps],  unclass[data_temporal[i, unclass] <= eps2])
+      if (length(reachables) + classn[i] < minpts) 
+        cv[i] <- (-1) 					
+      else {
+        cn <- cn + 1					
+        cv[i] <- cn
+        isseed[i] <- TRUE
+        reachables <- setdiff(reachables, i)
+        unclass <- setdiff(unclass, i)		
+        classn[reachables] <- classn[reachables] + 1
+        while (length(reachables)) {
+          cv[reachables] <- cn			
+          ap <- reachables							
+          reachables <- integer()
+          
+          for (i2 in seq(along = ap)) {
+            j <- ap[i2]
+            
+            jreachables <- intersect(unclass[data_spasial[j, unclass] <= eps], unclass[data_temporal[j, unclass] <= eps2])
+            
+            if (length(jreachables) + classn[j] >= minpts) {
+              isseed[j] <- TRUE
+              cv[jreachables[cv[jreachables] < 0]] <- cn
+              reachables <- union(reachables, jreachables[cv[jreachables] == 0])
+            }
+            classn[jreachables] <- classn[jreachables] + 1
+            unclass <- setdiff(unclass, j)
+          }
+        }
+      } 
+    } 
+    if (!length(unclass)) 
+      break
+    
+  }
+  
+  rm(classn)
+  if (any(cv == (-1))) {
+    cv[cv == (-1)] <- 0
+  }
+  out <- list(cluster = cv, eps = eps, minpts = minpts)
+  if (seeds && cn > 0) {
+    out$isseed <- isseed
+  }
+  class(out) <- "stdbscan"
+  out
+  
+}
+ 
+# Import Twitter Data -----------------------------------------------------
+
+# Twitter data can be in any readable format; text, .db, or any other format readable in R 
+
+load("Data_AllTweets.RData")
+
+
+# Define variables --------------------------------------------------------
+DB.Names <- c("Amsterdam","Athens","Copenhagen", "London", "LosAngeles",
+              "NewYork" , "Orlando" , "Paris" ,  "Seattle", "Munich")
+
+TimeZone <- c("Europe/Berlin", "Europe/Athens", "Europe/Berlin"  ,
+              "Europe/London", "America/Los_Angeles", "America/New_York", 
+              "America/New_York","Europe/Berlin","America/Los_Angeles", "Europe/Berlin" )
+
+DrawingTitle <- c("Amsterdam, Netherlands" , "Athens, Greece",
+                  "Copenhagen, Denmark", "London, United Kingdom",
+                  "Los Angeles, USA",  "New York, USA", "Orlando, USA",
+                  "Paris, France", "Seattle, USA", "Munich, Germany" )  
+
+Centres<- data.frame(
+  stringsAsFactors = FALSE,
+  Name = c("AMS_USERS","ATHENS_USERS",
+           "COPENHAGEN_USERS","Orlando_UsersDatabase",
+           "Seattle_UsersDatabase","UsersInMunich_mobilTUM","NewYork_USERS",
+           "London_USERS","LosAngeles_USERS","Paris_USERSData"),
+  Lat = c(52.373551,37.975408,55.681155,
+          28.541666,47.600412,48.138167,40.761758,51.507787,
+          34.04721,48.860193),
+  Lon = c(4.897014,23.728726,12.58886,
+          -81.380342,-122.326299,11.578913,-73.977324,-0.125745,
+          -118.268947,2.348929),
+  Top = c(52.4372,38.1238,55.7658,
+          28.6919,47.8685,48.2704,40.983,51.795,35.093,48.9946),
+  Bottom = c(52.3013,37.8374,55.6261,
+             28.2814,47.3472,48.0147,40.5013,51.2155,32.912,48.7499),
+  West = c(4.7983,23.5959,12.3823,
+           -81.5836,-122.4797,11.3736,-74.3513,-0.6015,-119.949,
+           2.1011),
+  East = c(5.0132,23.8788,12.6871,
+           -81.1752,-122.0251,11.7883,-73.7292,0.3214,-116.971,
+           2.5626),
+  TimeZone = c("Europe/Berlin",
+               "Europe/Athens","Europe/Berlin","America/New_York",
+               "America/Los_Angeles","Europe/Berlin","America/New_York",
+               "Europe/London","America/Los_Angeles","Europe/Berlin"),
+  CityPlot = c("Amsterdam, Netherlands",
+               "Athens, Greece","Copenhagen, Denmark","Orlando, USA",
+               "Seattle, USA","Munich, Germany","New York, USA",
+               "London, United Kingdom","Los Angeles, USA","Paris, France")
+)
+
+
+CityGeocode <- tibble::tribble(
+  ~lon,       ~lat,      ~type,      ~loctype,                 ~address,     ~north,     ~south,        ~east,        ~west,     ~locality,         ~country,
+  4.9035614, 52.3679843, "locality", "approximate", "amsterdam, netherlands", 52.4311573, 52.2781389,    5.0683903,    4.7288558,   "Amsterdam",    "Netherlands",
+  23.7275388, 37.9838096, "locality", "approximate",         "athens, greece", 38.0328563, 37.9488181,   23.7896925,   23.6869862,      "Athens",         "Greece",
+  12.5683372, 55.6760968, "locality", "approximate",    "copenhagen, denmark", 55.7270937,  55.615441,   12.7342654,   12.4533824,  "Copenhagen",        "Denmark",
+  -0.1277583, 51.5073509, "locality", "approximate",             "london, uk", 51.6723432, 51.3849401,     0.148271,   -0.3514683,      "London", "United Kingdom",
+  -118.2436849, 34.0522342, "locality", "approximate",   "los angeles, ca, usa", 34.3373061, 33.7036519, -118.1552891, -118.6681759, "Los Angeles",  "United States",
+  -74.0059728, 40.7127753, "locality", "approximate",      "new york, ny, usa", 40.9175771, 40.4773991,  -73.7002721,  -74.2590899,    "New York",  "United States",
+  -81.3792365, 28.5383355, "locality", "approximate",       "orlando, fl, usa", 28.6143519, 28.3479859,    -81.22977,    -81.50773,     "Orlando",  "United States",
+  2.3522219,  48.856614, "locality", "approximate",          "paris, france", 48.9021449,  48.815573,    2.4699208,     2.224199,       "Paris",         "France",
+  -122.3320708, 47.6062095, "locality", "approximate",       "seattle, wa, usa",  47.734145, 47.4919119, -122.2244331, -122.4596959,     "Seattle",  "United States",
+  11.5819805, 48.1351253, "locality", "approximate",        "munich, germany", 48.2482197, 48.0616018,   11.7228755,    11.360796,      "Munich",        "Germany"
+)
+
+
+
+
+SpatialMap <-TRUE
+TemporalPlot<-FALSE
+perUserAnalysis<-FALSE
+worldMap<-TRUE
+OnlyInCity<-FALSE
+smallClusters=FALSE
+spatialForSens <- c(0.01, 0.6, 1.2, 1.8, 2.4, 3)
+temporalForSens<- c(1   , 7  , 14 , 21 , 28 , 35, 150)
+PointsForSens<- c(3  , 5)
+K<-expand.grid(spatialForSens, temporalForSens, PointsForSens)
+dayInSeconds<- 86400
+i<-1
+j<-1
+
+
+
+# Tables ------------------------------------------------------------------
+# Table 1 -----------------------------------------------------------------
+i <- 1
+Table_1 <- data.frame(
+  City = character() ,
+  `Geotagged Tweets Per day` = numeric() , 
+  `Not-Geotagged Tweets Per day`= numeric() ,
+ `% Geotagged Tweets Per day`= numeric() 
+)
+
+
+for( i in 1:length(Data_AllTweets)){
+
+
+date <- (Data_AllTweets[[i]]["Date"])
+x <- lubridate::ymd_hms(date$Date)
+range(x)
+new_date<- as.Date(x, "%m/%d/%Y", tz="UTC") 
+y <-(unique(new_date))
+
+Duration <- as.numeric( difftime(range(y)[2] ,range(y)[1] , units = c("days")))
+ 
+z <-  Data_AllTweets[[i]] %>% 
+   count(geotagged) %>% 
+   mutate(Avg.tweet = n / Duration)
+ 
+
+ Table_1[i,1] <- names(Data_AllTweets)[i]
+ 
+ Table_1[i,2] <- z[2,3]
+ Table_1[i,3] <- z[1,3]
+ 
+ Table_1[i,4] <- 100 * (Table_1[i,2]  / Table_1[i,3])
+ 
+}
+
+print(Table_1)
+ 
+# Categories Tweets --------------------------------------------
+
+CityNames <- c("Amsterdam","Athens, Greece","Copenhagen", "London",
+               "Los Angeles","New York" , "Orlando" , "Paris" ,  "Seattle", "Munich")
+  
+#define Inside the city and outside the side
+
+i <-1
+IntersectionPoints <-vector("list",1)
+Data_AllTweets_InsideCity <-vector("list",1)
+
+for ( i in 1:10){
+  cat(as.character(Sys.time()), "Start City NO ",i, "\n") 
+  
+  sp_point <- Data_AllTweets[[i]] %>% 
+    dplyr::select(userID, TweetID, latitude , longitude , geotagged ,Date,HourOfDay , DayOfWeek)
+  
+  sp::coordinates(sp_point) <- ~ longitude + latitude
+  sp::proj4string(sp_point) <- sp::CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+  
+  CityCenterPoint <- CityGeocode[i,]
+  sp::coordinates(CityCenterPoint) <- ~lon + lat
+  sp::proj4string(CityCenterPoint) <- sp::CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+  
+  CityBuffer <- rgeos::gBuffer( CityCenterPoint, width = 0.45, byid=TRUE )  ## using one degree as 111 km 
+  
+  Intersection <- do.call(rbind.data.frame, (sp::over( CityBuffer,sp_point,returnList = TRUE )))
+  
+  Intersection$InsideCity <- 1L
+  sum(Intersection$InsideCity)  
+  
+  row.names(Intersection) <- NULL
+  
+  points <- Data_AllTweets[[i]] %>% 
+    dplyr::select(userID, TweetID, latitude , longitude , geotagged ,Date,HourOfDay , DayOfWeek ,tweetDate)
+  
+  mergedPoints <- dplyr::left_join( points, Intersection,by = c("userID", "TweetID", "geotagged" ,"Date","HourOfDay",  "DayOfWeek" ))
+  
+  
+  mergedPoints <- mergedPoints %>% 
+    plyr::mutate(InsideCity = ifelse(is.na(InsideCity) , 0,1))
+  
+  Data_AllTweets_InsideCity[[i]] <- mergedPoints
+  
+  cat(as.character(Sys.time()), "Finish City NO ",i, "\n") 
+  
+}
+
+Data_AllTweets_InsideCity<- setNames(Data_AllTweets_InsideCity, DB.Names)
+
+# Extract Tourist ID --------------------------------------------------------------------
+
+
+TouristId <-vector("list",10)
+ResidentId <-vector("list",10)
+Not_Res_Not_Tour <- vector("list",10)
+CitiesTweets <-vector("list",10)
+
+i <- 1
+for ( i in 1:10){
+  cat(as.character(Sys.time()), "Start City NO ",i, "\n") 
+  
+  city_1 <- Data_AllTweets_InsideCity [[i]] %>%
+    dplyr::filter(geotagged == 1) %>% 
+    dplyr::group_by(userID) %>% 
+    dplyr::mutate(PerInside = sum(InsideCity )/ dplyr::n())
+  
+  quant <- quantile(city_1[["PerInside"]],prob =c(0.25,0.5))
+  
+  city_1$Tourist <- dplyr::if_else(city_1$PerInside < quant[1] , 1,
+                                   dplyr::if_else( city_1$PerInside >= quant[1] & city_1$PerInside <= quant[2],2, 3))
+  
+  TouristId[[i]] <- city_1 %>% 
+    filter(Tourist == 1) %>% 
+    select(userID) %>% 
+    unique(.)
+  
+  
+  Not_Res_Not_Tour[[i]] <-as.data.frame( city_1 %>% 
+                                           filter(Tourist == 2) %>% 
+                                           select(userID) %>% 
+                                           unique(.))
+  
+  ResidentId[[i]] <- as.data.frame( city_1 %>% 
+                                      filter(Tourist == 3) %>% 
+                                      select(userID) %>% 
+                                      unique(.))
+  
+  CitiesTweets[[i]] <- city_1
+  cat(as.character(Sys.time()), "Finsh City NO ",i, "\n") 
+  
+}
+
+TouristId<- setNames(TouristId, DB.Names)
+ResidentId<- setNames(ResidentId, DB.Names)
+Not_Res_Not_Tour<- setNames(Not_Res_Not_Tour, DB.Names)
+CitiesTweets <- setNames(CitiesTweets, DB.Names)
+
+ 
+
+# Here we will split the original data into tourist and resident 
+
+TouristTweets <- vector("list", 1)
+ResidentTweets <-vector("list",1)
+Not_Res_Not_Tour_Tweets <- vector("list",1)
+
+
+i <- 1
+
+for ( i in 1: 10){
+  
+  cat(as.character(Sys.time()), "Start City NO ",i, "\n") 
+  
+  temp_Data <- Data_AllTweets[[i]] 
+  touristTweets_city <- subset( temp_Data , temp_Data$userID  %in% unlist(TouristId[[i]][1]))
+  TouristTweets[[i]] <- touristTweets_city
+  
+  temp_Data <- Data_AllTweets[[i]] 
+  ResidentTweets_city <- subset( temp_Data , temp_Data$userID  %in% unlist(ResidentId[[i]][1]))
+  ResidentTweets[[i]] <- ResidentTweets_city
+  
+  
+  temp_Data <- Data_AllTweets[[i]] 
+  Not_Res_Not_Tour_city <- subset( temp_Data , temp_Data$userID  %in% unlist(Not_Res_Not_Tour[[i]][1]))
+  Not_Res_Not_Tour_Tweets[[i]] <- Not_Res_Not_Tour_city 
+  
+  cat(as.character(Sys.time()), "End City NO ",i, "\n") 
+  
+}
+
+TouristTweets<- setNames(TouristTweets, DB.Names)
+ResidentTweets<- setNames(ResidentTweets, DB.Names)
+Not_Res_Not_Tour_Tweets<- setNames(Not_Res_Not_Tour_Tweets, DB.Names)
+
+#Isolate In-city tweets
+
+TouristTweets_In <- vector("list", 1)
+ResidentTweets_In <-vector("list",1)
+Not_Res_Not_Tour_Tweets_In <- vector("list",1)
+
+i <- 1
+
+for ( i in 1: 10){
+  
+  cat(as.character(Sys.time()), "Start City NO ",i, "\n") 
+  
+  temp_Data <- Data_AllTweets_InsideCity[[i]] 
+  touristTweets_city <- subset( temp_Data , temp_Data$userID  %in% unlist(TouristId[[i]][1]))
+  TouristTweets[[i]] <- touristTweets_city
+  
+  temp_Data <- Data_AllTweets_InsideCity[[i]] 
+  ResidentTweets_city <- subset( temp_Data , temp_Data$userID  %in% unlist(ResidentId[[i]][1]))
+  ResidentTweets[[i]] <- ResidentTweets_city
+  
+  
+  temp_Data <- Data_AllTweets_InsideCity[[i]] 
+  Not_Res_Not_Tour_city <- subset( temp_Data , temp_Data$userID  %in% unlist(Not_Res_Not_Tour[[i]][1]))
+  Not_Res_Not_Tour_Tweets[[i]] <- Not_Res_Not_Tour_city 
+  
+  cat(as.character(Sys.time()), "End City NO ",i, "\n") 
+  
+}
+
+TouristTweets_In<- setNames(TouristTweets, DB.Names)
+ResidentTweets_In<- setNames(ResidentTweets, DB.Names)
+Not_Res_Not_Tour_Tweets_In<- setNames(Not_Res_Not_Tour_Tweets, DB.Names)
+
+
+
+
+# Summary list and cluster ------------------------------------------------
+
+# Summary list total  ----------------------------------------------
+
+summary_list <- vector("list", 1)
+ 
+
+# we then perform the analysis we would like to have for each database
+i <- 1
+j <-1
+
+for(i in 1:10){
+  AllTweets <- Data_AllTweets[[i]]  #### Here we insert the tweets list we want to cluster it
+  examinedCentre<-Centres[i, ]
+  
+  if(perUserAnalysis==TRUE){
+    # Search Which are in and which are out of the city
+    AllTweets$InCity<-0
+    AllTweets$OutCity<-0
+    AllTweets$InCity[which(AllTweets$latitude>examinedCentre$Bottom & 
+                             AllTweets$latitude<examinedCentre$Top &
+                             AllTweets$longitude<examinedCentre$East &
+                             AllTweets$longitude>examinedCentre$West)]<-1
+    AllTweets$InCity[AllTweets$latitude == 0]<- -1
+    AllTweets$OutCity[AllTweets$InCity == 0 ]<- 1
+    AllTweets$InCity[is.na(AllTweets$InCity)]<- 0
+    AllTweets$OutCity[is.na(AllTweets$OutCity)]<- 0
+    
+    
+    # WITH THE FOLLOWING SUMMARIZATION we can get: percentage of geotagged/notgeotagged per user
+    perUser<-plyr::ddply(AllTweets, ~ userID, summarize, 
+                         freq = length(TweetID),
+                         onlyGeo = length(userID[latitude!=0]),
+                         onlyNoGeo = length(userID[latitude==0]), 
+                         InCity = length(userID[InCity==1]), 
+                         OuTCity = length(userID[OutCity==1]), 
+                         earlierDate = min(tweetDate),
+                         latestDate = max(tweetDate))
+    perUser$DBSCAN002nClus <-NA
+    perUser$DBSCAN002nPoiInClus<-NA
+    perUser$DBSCAN002nNoise<-NA
+    perUser$InCityClusters<-0
+    perUser$OutCityClusters<-0
+    perUser$NearCityConvHall<-NA
+    perUser$NearCityAreaSqM <-NA
+    perUser$FirstLarConvHall<-NA
+    perUser$FirstLarAreaSqM <-NA
+    perUser$SecLarConvHall  <-NA
+    perUser$SecLarAreaSqM  <-NA
+    perUser$LargeClasses<-NA
+    perUser$NearCityNPoints<-NA
+    perUser$FirstLargerNPoints<-NA
+    perUser$SecondLargerNPoints<-NA
+    perUser$LargeClustersNoise<-NA
+    
+    
+    j<-1
+    
+    # The following is the per user analysis. 
+    #it includes the estimation of per area activity spaces and smaller clusters based on the number of places visited.
+    for(j in 1:length(perUser$userID)){
+      # We have the users' Data here
+      examUserData<-AllTweets[AllTweets$userID == perUser$userID[j] & AllTweets$latitude !=0 , ] 
+      if(nrow(examUserData)>3){
+        clusterData<-examUserData[ , c("longitude", "latitude", "tweetDate")]
+        names(clusterData)<-c("longitude", "latitude", "Date")
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        data_spasial<- dist(cbind(clusterData$latitude,clusterData$longitude))
+        data_temporal<- dist(clusterData$Date)
+      }
+      
+      distMatrix <- dist(examUserData$tweetDate, method="euclidean")
+      #hc <- hclust(distMatrix, method="average")
+      
+      if(nrow(examUserData)>3){
+        # here we want to examine the activity space of each user
+        # we need to have the activity space in the country examined
+        clusterData<-examUserData[ , c("longitude", "latitude")]
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        # We have clasified the data
+        dbScanClust        <-dbscan(clusterData, eps =  1.2, minPts = 3)
+        clusterData$Cluster<-dbScanClust$cluster
+        uniqueClusters<-unique(dbScanClust$cluster)
+        nClasses<-length(uniqueClusters[uniqueClusters > 0])
+        perUser$LargeClasses[j] <- nClasses
+        perClass<-plyr::ddply(clusterData, ~ Cluster, summarize, 
+                              nPerClass = length(latitude))
+        perClass<-perClass[perClass$Cluster >0 , ]
+        perClass<-perClass[order(-perClass$nPerClass), ]
+        # We will examine the three most dominant if existing.
+        FirstLarger<-FALSE
+        SecondLarger<-FALSE
+        if(nClasses>=1){
+          for(k in 1:nClasses){
+            centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+            centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+            dist<- distm (c(centreLon, centreLat), c(examinedCentre$Lon, examinedCentre$Lat), fun = distHaversine)
+            
+            # datesForCluster<-
+            Longitude<-clusterData[clusterData$Cluster==k, "longitude"]
+            exCluster<-data.frame(Longitude)
+            exCluster$latitude<-clusterData[clusterData$Cluster==k, "latitude"]
+            ActivitySpace <- clusterData[chull(clusterData$longitude, clusterData$latitude), ]
+            
+            perUser$LargeClustersNoise[j] <-nrow(clusterData[clusterData$Cluster==0, ])
+            
+            p = Polygon(ActivitySpace[ , 1:2])
+            if(length(p@coords[,1])>4){
+              ps = Polygons(list(p),1)
+              sps = SpatialPolygons(list(ps))
+              WKT<-rgeos::writeWKT(sps)
+              AreaSqM<-areaPolygon(ActivitySpace, a=6378137, f=1/298.257223563)
+            }else{
+              WKT<-NA
+              AreaSqM<-NA
+            }
+            
+            
+            if(dist<120000){ # if our activity is near then we create a city near activity space 
+              perUser$NearCityConvHall[j]<-WKT
+              perUser$NearCityAreaSqM [j] <- AreaSqM
+              perUser$NearCityNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              
+            }else{
+              if(FirstLarger==FALSE){
+                perUser$FirstLarConvHall[j]<-WKT
+                perUser$FirstLarAreaSqM [j] <- AreaSqM
+                FirstLarger<-TRUE
+                SecondLarger=2
+                perUser$FirstLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+                
+              }
+              if(SecondLarger==FALSE){
+                perUser$SecLarConvHall[j]<-WKT
+                perUser$SecLarAreaSqM[j] <- AreaSqM
+                SecondLarger<-TRUE
+                perUser$SecondLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              }
+              if(SecondLarger==2){
+                SecondLarger<-FALSE
+              }
+            }
+          }
+        }
+        
+      }
+      if(smallClusters==TRUE){
+        # Lets Examine the clusters that are created. 
+        if(nrow(examUserData)>1){
+          dbScanClust        <-dbscan(clusterData, eps = 0.002, minPts = 5)
+          clusterData$Cluster<-dbScanClust$cluster
+          nClustered         <-length(clusterData$Cluster[clusterData$Cluster>0])
+          nNoise             <-length(clusterData$Cluster[clusterData$Cluster==0])
+          uniqueClusters<-unique(dbScanClust$cluster)
+          nClasses<-length(uniqueClusters[uniqueClusters>0])
+          perUser$DBSCAN002nClus[j]      <- nClasses
+          perUser$DBSCAN002nPoiInClus[j] <- nClustered
+          perUser$DBSCAN002nNoise[j]     <- nNoise
+          if(nClustered>0){
+            for(k in 1:nClasses){
+              centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+              centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+              if(centreLat>examinedCentre$Bottom & 
+                 centreLat<examinedCentre$Top &
+                 centreLon<examinedCentre$East &
+                 centreLon>examinedCentre$West){
+                perUser$InCityClusters[j]<-perUser$InCityClusters[j]+1
+              }else{
+                perUser$OutCityClusters[j]<-perUser$OutCityClusters[j]+1
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    summary_list[[i]] <- perUser    #### Here we the summary List we want to gather the data in 
+    
+    nam <- names(Data_AllTweets)[i]
+    nam<-paste("AllData_", nam,i,".csv", sep = "")
+    write.csv(file = nam, perUser)
+  }
+  cat(as.character(Sys.time()), "Have finished database",i)
+}
+
+
+
+# Summary list for Residents ----------------------------------------------
+
+ summary_list_Resid <- vector("list", 1)
+
+ 
+# we then perform the analysis we would like to have for each database
+i <- 1
+j <-1
+
+for(i in 1:10){
+  AllTweets <- ResidentTweets[[i]]  #### Here we insert the tweets list we want to cluster it
+  examinedCentre<-Centres[i, ]
+  
+  if(perUserAnalysis==TRUE){
+    # Search Which are in and which are out of the city
+    AllTweets$InCity<-0
+    AllTweets$OutCity<-0
+    AllTweets$InCity[which(AllTweets$latitude>examinedCentre$Bottom & 
+                             AllTweets$latitude<examinedCentre$Top &
+                             AllTweets$longitude<examinedCentre$East &
+                             AllTweets$longitude>examinedCentre$West)]<-1
+    AllTweets$InCity[AllTweets$latitude == 0]<- -1
+    AllTweets$OutCity[AllTweets$InCity == 0 ]<- 1
+    AllTweets$InCity[is.na(AllTweets$InCity)]<- 0
+    AllTweets$OutCity[is.na(AllTweets$OutCity)]<- 0
+    
+    
+    # WITH THE FOLLOWING SUMMARIZATION we can get: percentage of geotagged/notgeotagged per user
+    perUser<-plyr::ddply(AllTweets, ~ userID, summarize, 
+                         freq = length(TweetID),
+                         onlyGeo = length(userID[latitude!=0]),
+                         onlyNoGeo = length(userID[latitude==0]), 
+                         InCity = length(userID[InCity==1]), 
+                         OuTCity = length(userID[OutCity==1]), 
+                         earlierDate = min(tweetDate),
+                         latestDate = max(tweetDate))
+    perUser$DBSCAN002nClus <-NA
+    perUser$DBSCAN002nPoiInClus<-NA
+    perUser$DBSCAN002nNoise<-NA
+    perUser$InCityClusters<-0
+    perUser$OutCityClusters<-0
+    perUser$NearCityConvHall<-NA
+    perUser$NearCityAreaSqM <-NA
+    perUser$FirstLarConvHall<-NA
+    perUser$FirstLarAreaSqM <-NA
+    perUser$SecLarConvHall  <-NA
+    perUser$SecLarAreaSqM  <-NA
+    perUser$LargeClasses<-NA
+    perUser$NearCityNPoints<-NA
+    perUser$FirstLargerNPoints<-NA
+    perUser$SecondLargerNPoints<-NA
+    perUser$LargeClustersNoise<-NA
+    
+    
+    j<-1
+    
+    # The following is the per user analysis. 
+    #it includes the estimation of per area activity spaces and smaller clusters based on the number of places visited.
+    for(j in 1:length(perUser$userID)){
+      # We have the users' Data here
+      examUserData<-AllTweets[AllTweets$userID == perUser$userID[j] & AllTweets$latitude !=0 , ] 
+      if(nrow(examUserData)>3){
+        clusterData<-examUserData[ , c("longitude", "latitude", "tweetDate")]
+        names(clusterData)<-c("longitude", "latitude", "Date")
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        data_spasial<- dist(cbind(clusterData$latitude,clusterData$longitude))
+        data_temporal<- dist(clusterData$Date)
+      }
+      
+      distMatrix <- dist(examUserData$tweetDate, method="euclidean")
+      #hc <- hclust(distMatrix, method="average")
+      
+      if(nrow(examUserData)>3){
+        # here we want to examine the activity space of each user
+        # we need to have the activity space in the country examined
+        clusterData<-examUserData[ , c("longitude", "latitude")]
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        # We have clasified the data
+        dbScanClust        <-dbscan(clusterData, eps =  1.2, minPts = 3)
+        clusterData$Cluster<-dbScanClust$cluster
+        uniqueClusters<-unique(dbScanClust$cluster)
+        nClasses<-length(uniqueClusters[uniqueClusters > 0])
+        perUser$LargeClasses[j] <- nClasses
+        perClass<-plyr::ddply(clusterData, ~ Cluster, summarize, 
+                              nPerClass = length(latitude))
+        perClass<-perClass[perClass$Cluster >0 , ]
+        perClass<-perClass[order(-perClass$nPerClass), ]
+        # We will examine the three most dominant if existing.
+        FirstLarger<-FALSE
+        SecondLarger<-FALSE
+        if(nClasses>=1){
+          for(k in 1:nClasses){
+            centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+            centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+            dist<- distm (c(centreLon, centreLat), c(examinedCentre$Lon, examinedCentre$Lat), fun = distHaversine)
+            
+            # datesForCluster<-
+            Longitude<-clusterData[clusterData$Cluster==k, "longitude"]
+            exCluster<-data.frame(Longitude)
+            exCluster$latitude<-clusterData[clusterData$Cluster==k, "latitude"]
+            ActivitySpace <- clusterData[chull(clusterData$longitude, clusterData$latitude), ]
+            
+            perUser$LargeClustersNoise[j] <-nrow(clusterData[clusterData$Cluster==0, ])
+            
+            p = Polygon(ActivitySpace[ , 1:2])
+            if(length(p@coords[,1])>4){
+              ps = Polygons(list(p),1)
+              sps = SpatialPolygons(list(ps))
+              WKT<-rgeos::writeWKT(sps)
+              AreaSqM<-areaPolygon(ActivitySpace, a=6378137, f=1/298.257223563)
+            }else{
+              WKT<-NA
+              AreaSqM<-NA
+            }
+            
+            
+            if(dist<120000){ # if our activity is near then we create a city near activity space 
+              perUser$NearCityConvHall[j]<-WKT
+              perUser$NearCityAreaSqM [j] <- AreaSqM
+              perUser$NearCityNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              
+            }else{
+              if(FirstLarger==FALSE){
+                perUser$FirstLarConvHall[j]<-WKT
+                perUser$FirstLarAreaSqM [j] <- AreaSqM
+                FirstLarger<-TRUE
+                SecondLarger=2
+                perUser$FirstLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+                
+              }
+              if(SecondLarger==FALSE){
+                perUser$SecLarConvHall[j]<-WKT
+                perUser$SecLarAreaSqM[j] <- AreaSqM
+                SecondLarger<-TRUE
+                perUser$SecondLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              }
+              if(SecondLarger==2){
+                SecondLarger<-FALSE
+              }
+            }
+          }
+        }
+        
+      }
+      if(smallClusters==TRUE){
+        # Lets Examine the clusters that are created. 
+        if(nrow(examUserData)>1){
+          dbScanClust        <-dbscan(clusterData, eps = 0.002, minPts = 5)
+          clusterData$Cluster<-dbScanClust$cluster
+          nClustered         <-length(clusterData$Cluster[clusterData$Cluster>0])
+          nNoise             <-length(clusterData$Cluster[clusterData$Cluster==0])
+          uniqueClusters<-unique(dbScanClust$cluster)
+          nClasses<-length(uniqueClusters[uniqueClusters>0])
+          perUser$DBSCAN002nClus[j]      <- nClasses
+          perUser$DBSCAN002nPoiInClus[j] <- nClustered
+          perUser$DBSCAN002nNoise[j]     <- nNoise
+          if(nClustered>0){
+            for(k in 1:nClasses){
+              centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+              centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+              if(centreLat>examinedCentre$Bottom & 
+                 centreLat<examinedCentre$Top &
+                 centreLon<examinedCentre$East &
+                 centreLon>examinedCentre$West){
+                perUser$InCityClusters[j]<-perUser$InCityClusters[j]+1
+              }else{
+                perUser$OutCityClusters[j]<-perUser$OutCityClusters[j]+1
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    Summary_list_Res[[i]] <- perUser    #### Here we the summary List we want to gather the data in 
+    
+    nam <- names(Data_AllTweets)[i]
+    nam<-paste("ResData_", nam,i,".csv", sep = "")
+    write.csv(file = nam, perUser)
+  }
+  cat(as.character(Sys.time()), "Have finished database",i)
+}
+
+
+
+# Summary list for Tourists ----------------------------------------------
+
+summary_list_tourist <- vector("list", 1)
+
+# we then perform the analysis we would like to have for each database
+i <- 1
+j <-1
+
+for(i in 1:10){
+  AllTweets <- TouristTweets[[i]]  #### Here we insert the tweets list we want to cluster it
+  examinedCentre<-Centres[i, ]
+  
+  if(perUserAnalysis==TRUE){
+    # Search Which are in and which are out of the city
+    AllTweets$InCity<-0
+    AllTweets$OutCity<-0
+    AllTweets$InCity[which(AllTweets$latitude>examinedCentre$Bottom & 
+                             AllTweets$latitude<examinedCentre$Top &
+                             AllTweets$longitude<examinedCentre$East &
+                             AllTweets$longitude>examinedCentre$West)]<-1
+    AllTweets$InCity[AllTweets$latitude == 0]<- -1
+    AllTweets$OutCity[AllTweets$InCity == 0 ]<- 1
+    AllTweets$InCity[is.na(AllTweets$InCity)]<- 0
+    AllTweets$OutCity[is.na(AllTweets$OutCity)]<- 0
+    
+    
+    # WITH THE FOLLOWING SUMMARIZATION we can get: percentage of geotagged/notgeotagged per user
+    perUser<-plyr::ddply(AllTweets, ~ userID, summarize, 
+                         freq = length(TweetID),
+                         onlyGeo = length(userID[latitude!=0]),
+                         onlyNoGeo = length(userID[latitude==0]), 
+                         InCity = length(userID[InCity==1]), 
+                         OuTCity = length(userID[OutCity==1]), 
+                         earlierDate = min(tweetDate),
+                         latestDate = max(tweetDate))
+    perUser$DBSCAN002nClus <-NA
+    perUser$DBSCAN002nPoiInClus<-NA
+    perUser$DBSCAN002nNoise<-NA
+    perUser$InCityClusters<-0
+    perUser$OutCityClusters<-0
+    perUser$NearCityConvHall<-NA
+    perUser$NearCityAreaSqM <-NA
+    perUser$FirstLarConvHall<-NA
+    perUser$FirstLarAreaSqM <-NA
+    perUser$SecLarConvHall  <-NA
+    perUser$SecLarAreaSqM  <-NA
+    perUser$LargeClasses<-NA
+    perUser$NearCityNPoints<-NA
+    perUser$FirstLargerNPoints<-NA
+    perUser$SecondLargerNPoints<-NA
+    perUser$LargeClustersNoise<-NA
+    
+    
+    j<-1
+    
+    # The following is the per user analysis. 
+    #it includes the estimation of per area activity spaces and smaller clusters based on the number of places visited.
+    for(j in 1:length(perUser$userID)){
+      # We have the users' Data here
+      examUserData<-AllTweets[AllTweets$userID == perUser$userID[j] & AllTweets$latitude !=0 , ] 
+      if(nrow(examUserData)>3){
+        clusterData<-examUserData[ , c("longitude", "latitude", "tweetDate")]
+        names(clusterData)<-c("longitude", "latitude", "Date")
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        data_spasial<- dist(cbind(clusterData$latitude,clusterData$longitude))
+        data_temporal<- dist(clusterData$Date)
+      }
+      
+      distMatrix <- dist(examUserData$tweetDate, method="euclidean")
+      #hc <- hclust(distMatrix, method="average")
+      
+      if(nrow(examUserData)>3){
+        # here we want to examine the activity space of each user
+        # we need to have the activity space in the country examined
+        clusterData<-examUserData[ , c("longitude", "latitude")]
+        clusterData$longitude<-as.numeric(clusterData$longitude)
+        clusterData$latitude<-as.numeric(clusterData$latitude)
+        # We have clasified the data
+        dbScanClust        <-dbscan(clusterData, eps =  1.2, minPts = 3)
+        clusterData$Cluster<-dbScanClust$cluster
+        uniqueClusters<-unique(dbScanClust$cluster)
+        nClasses<-length(uniqueClusters[uniqueClusters > 0])
+        perUser$LargeClasses[j] <- nClasses
+        perClass<-plyr::ddply(clusterData, ~ Cluster, summarize, 
+                              nPerClass = length(latitude))
+        perClass<-perClass[perClass$Cluster >0 , ]
+        perClass<-perClass[order(-perClass$nPerClass), ]
+        # We will examine the three most dominant if existing.
+        FirstLarger<-FALSE
+        SecondLarger<-FALSE
+        if(nClasses>=1){
+          for(k in 1:nClasses){
+            centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+            centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+            dist<- distm (c(centreLon, centreLat), c(examinedCentre$Lon, examinedCentre$Lat), fun = distHaversine)
+            
+            # datesForCluster<-
+            Longitude<-clusterData[clusterData$Cluster==k, "longitude"]
+            exCluster<-data.frame(Longitude)
+            exCluster$latitude<-clusterData[clusterData$Cluster==k, "latitude"]
+            ActivitySpace <- clusterData[chull(clusterData$longitude, clusterData$latitude), ]
+            
+            perUser$LargeClustersNoise[j] <-nrow(clusterData[clusterData$Cluster==0, ])
+            
+            p = Polygon(ActivitySpace[ , 1:2])
+            if(length(p@coords[,1])>4){
+              ps = Polygons(list(p),1)
+              sps = SpatialPolygons(list(ps))
+              WKT<-rgeos::writeWKT(sps)
+              AreaSqM<-areaPolygon(ActivitySpace, a=6378137, f=1/298.257223563)
+            }else{
+              WKT<-NA
+              AreaSqM<-NA
+            }
+            
+            
+            if(dist<120000){ # if our activity is near then we create a city near activity space 
+              perUser$NearCityConvHall[j]<-WKT
+              perUser$NearCityAreaSqM [j] <- AreaSqM
+              perUser$NearCityNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              
+            }else{
+              if(FirstLarger==FALSE){
+                perUser$FirstLarConvHall[j]<-WKT
+                perUser$FirstLarAreaSqM [j] <- AreaSqM
+                FirstLarger<-TRUE
+                SecondLarger=2
+                perUser$FirstLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+                
+              }
+              if(SecondLarger==FALSE){
+                perUser$SecLarConvHall[j]<-WKT
+                perUser$SecLarAreaSqM[j] <- AreaSqM
+                SecondLarger<-TRUE
+                perUser$SecondLargerNPoints [j] <-nrow(clusterData[clusterData$Cluster==k, ])
+              }
+              if(SecondLarger==2){
+                SecondLarger<-FALSE
+              }
+            }
+          }
+        }
+        
+      }
+      if(smallClusters==TRUE){
+        # Lets Examine the clusters that are created. 
+        if(nrow(examUserData)>1){
+          dbScanClust        <-dbscan(clusterData, eps = 0.002, minPts = 5)
+          clusterData$Cluster<-dbScanClust$cluster
+          nClustered         <-length(clusterData$Cluster[clusterData$Cluster>0])
+          nNoise             <-length(clusterData$Cluster[clusterData$Cluster==0])
+          uniqueClusters<-unique(dbScanClust$cluster)
+          nClasses<-length(uniqueClusters[uniqueClusters>0])
+          perUser$DBSCAN002nClus[j]      <- nClasses
+          perUser$DBSCAN002nPoiInClus[j] <- nClustered
+          perUser$DBSCAN002nNoise[j]     <- nNoise
+          if(nClustered>0){
+            for(k in 1:nClasses){
+              centreLon<-mean(clusterData[clusterData$Cluster==k, "longitude"])
+              centreLat<-mean(clusterData[clusterData$Cluster==k, "latitude"])
+              if(centreLat>examinedCentre$Bottom & 
+                 centreLat<examinedCentre$Top &
+                 centreLon<examinedCentre$East &
+                 centreLon>examinedCentre$West){
+                perUser$InCityClusters[j]<-perUser$InCityClusters[j]+1
+              }else{
+                perUser$OutCityClusters[j]<-perUser$OutCityClusters[j]+1
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    Summary_list_Tour[[i]] <- perUser    #### Here we the summary List we want to gather the data in 
+    
+    nam <- names(Data_AllTweets)[i]
+    nam<-paste("TourData_", nam,i,".csv", sep = "")
+    write.csv(file = nam, perUser)
+  }
+  cat(as.character(Sys.time()), "Have finished database",i)
+}
+
+
+
+
+# Table 2 -----------------------------------------------------------------
+
+i <-1
+
+df_tab_2 <- data.frame(City = numeric(),
+                       Number.of.Users = numeric(), 
+                       Mean.No.Tweets  = numeric(), 
+                       SD.No.Tweets  = numeric(), 
+                       Mean.GeoTaged = numeric(), 
+                       SD.GeoTaged = numeric(),
+                       Mean.Geo.in.City = numeric())
+
+for ( i in 1:10){
+  
+  temp <- Data_AllTweets_InsideCity[[i]] %>% 
+    select(userID, latitude, longitude , geotagged, InsideCity) %>% 
+    group_by(userID) %>% 
+    dplyr::summarise( MeanInCity = 100* sum(InsideCity)/ sum(geotagged),
+                      Freq = n(), perGeo = 100 * sum(geotagged)/ n())
+  
+  df_tab_2[i,1] <- names(Data_AllTweets)[i]
+  df_tab_2[i,2] <- nrow(temp)
+  df_tab_2[i,3] <- round(mean(temp$Freq),1)
+  df_tab_2[i,4] <- round(sd(temp$Freq),1)
+  df_tab_2[i,5] <- round(mean(temp$perGeo),1)
+  df_tab_2[i,6] <- round(sd(temp$perGeo),1)
+  df_tab_2[i,7] <- round(100 * mean((summary_list[[i]]$InCity/summary_list[[i]]$onlyGeo), na.rm = T),1)
+}
+
+
+
+# Table 3 -----------------------------------------------------------------
+
+table_3 <- data.frame(City = character(),
+                      pct_Resident = numeric(), 
+                      pct_tourist  = numeric(), 
+                      pct_Unclear = numeric(),
+                      No_Resident = numeric(), 
+                      No_tourist  = numeric(), 
+                      No_Unclear = numeric(), 
+                      total_users = numeric())
+
+names(TouristId)
+
+i <- 1
+
+for( i in 1:length(names(TouristId))){
+  
+
+table_3[i, "City"] <-  names(TouristId)[i]
+
+name_city <- table_3[i, "City"]
+
+table_3[i, "No_tourist"]  <- nrow(TouristId[[name_city]])
+table_3[i, "No_Resident"]  <- nrow(ResidentId[[name_city]])
+table_3[i, "No_Unclear"]  <- nrow(Not_Res_Not_Tour[[name_city]])
+
+table_3[i, "total_users"]  <-  (table_3[i, "No_Resident"]  + 
+                                  table_3[i, "No_Unclear"] +
+                                  table_3[i, "No_tourist"] )
+
+
+
+table_3[i, "pct_tourist"]  <-  round(100* table_3[i, "No_tourist"]  / (table_3[i, "No_Resident"]  + 
+                                                             table_3[i, "No_Unclear"] +
+                                                             table_3[i, "No_tourist"] ),1)
+
+table_3[i, "pct_Resident"]  <- round(100* table_3[i, "No_Resident"]  / (table_3[i, "No_Resident"]  + 
+                                                             table_3[i, "No_Unclear"] +
+                                                             table_3[i, "No_tourist"] ),1)
+  
+table_3[i, "pct_Unclear"]  <- round(100* table_3[i, "No_tourist"]  / (table_3[i, "No_Resident"]  + 
+                                                              table_3[i, "No_Unclear"] +
+                                                              table_3[i, "No_tourist"] ),1)
+
+ 
+
+}
+
+
+print(table_3)
+
+# Table 4 -----------------------------------------------------------------
+Tab_4_total <- data.frame(City = character(),
+                       MeanNumber.of.clusters_total = numeric(), 
+                       MeanPoint.of.clusters_total   = numeric(), 
+                       MeanNoisepoint_total  = numeric(), 
+                       Mean.cluster.InCity_total = numeric())
+i <-1
+
+for( i in 1 : length(Summary_list)){
+  Tab_4_total[i, "City"] <-  names(Summary_list)[i]
+  Tab_4_total[i, "MeanNumber.of.clusters_total"] <- mean(Summary_list[[i]]$DBSCAN002nClus, na.rm = T)
+  Tab_4_total[i, "MeanPoint.of.clusters_total"] <- mean(Summary_list[[i]]$DBSCAN002nPoiInClus, na.rm = T)
+  Tab_4_total[i, "MeanNoisepoint_total"] <- mean(Summary_list[[i]]$DBSCAN002nNoise, na.rm = T)
+  Tab_4_total[i, "Mean.cluster.InCity_total"] <- mean(Summary_list[[i]]$InCityClusters, na.rm = T)
+}
+
+
+
+
+Tab_4_Resident <- data.frame(City = character(),
+                          MeanNumber.of.clusters_Res = numeric(), 
+                          MeanPoint.of.clusters_Res   = numeric(), 
+                          MeanNoisepoint_Res  = numeric(), 
+                          Mean.cluster.InCity_Res = numeric())
+i <-1
+
+for( i in 1 : length(Summary_list_Res)){
+  Tab_4_Resident[i, "City"] <-  names(Summary_list_Res)[i]
+  Tab_4_Resident[i, "MeanNumber.of.clusters_Res"] <- mean(Summary_list_Res[[i]]$DBSCAN002nClus, na.rm = T)
+  Tab_4_Resident[i, "MeanPoint.of.clusters_Res"] <- mean(Summary_list_Res[[i]]$DBSCAN002nPoiInClus, na.rm = T)
+  Tab_4_Resident[i, "MeanNoisepoint_Res"] <- mean(Summary_list_Res[[i]]$DBSCAN002nNoise, na.rm = T)
+  Tab_4_Resident[i, "Mean.cluster.InCity_Res"] <- mean(Summary_list_Res[[i]]$InCityClusters, na.rm = T)
+}
+
+
+Tab_4_Tourist <- data.frame(City = character(),
+                             MeanNumber.of.clusters_tour = numeric(), 
+                             MeanPoint.of.clusters_tour   = numeric(), 
+                             MeanNoisepoint_tour  = numeric(), 
+                             Mean.cluster.InCity_tour = numeric())
+i <-1
+
+for( i in 1 : length(Summary_list_Tour)){
+  Tab_4_Tourist[i, "City"] <-  names(Summary_list_Tour)[i]
+  Tab_4_Tourist[i, "MeanNumber.of.clusters_tour"] <- mean(Summary_list_Tour[[i]]$DBSCAN002nClus, na.rm = T)
+  Tab_4_Tourist[i, "MeanPoint.of.clusters_tour"] <- mean(Summary_list_Tour[[i]]$DBSCAN002nPoiInClus, na.rm = T)
+  Tab_4_Tourist[i, "MeanNoisepoint_tour"] <- mean(Summary_list_Tour[[i]]$DBSCAN002nNoise, na.rm = T)
+  Tab_4_Tourist[i, "Mean.cluster.InCity_tour"] <- mean(Summary_list_Tour[[i]]$InCityClusters, na.rm = T)
+  
+}
+
+
+Tab_4 <- bind_cols(Tab_4_total, Tab_4_Resident %>% select(-City), Tab_4_Tourist %>% select(-City))
+
+print(Tab_4)
+
+
+
+# Total table 5 -----------------------------------------------------------
+
+Power_table_total <- data.frame(City = numeric(),
+                        NP_Xmin  = numeric(), 
+                        NP_Pvalue = numeric(),
+                        NP_Alpha = numeric(),
+                        NN_Xmin = numeric(),
+                        NN_Pvalue  = numeric(),
+                        NN_Alpha = numeric(),
+                        NC_Xmin = numeric(),
+                        NC_Pvalue  = numeric(),
+                        NC_Alpha = numeric())
+
+i <-1
+for (i in 1: 10){
+  
+  
+  temp <- Summary_list[[i]]
+  
+  x <- temp$DBSCAN002nPoiInClus[temp$DBSCAN002nPoiInClus!= 0 & !is.na(temp$DBSCAN002nPoiInClus)]
+
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_total[i,2] <- est$xmin
+  Power_table_total[i,4] <- estimate_pars(m_pl, pars = NULL)[1]
+  m_pl$xmin <- est
+  
+  bs <- bootstrap_p(m_pl)
+  Power_table_total[i,3] <-bs$p
+
+  x <- temp$DBSCAN002nNoise[temp$DBSCAN002nNoise!= 0 & !is.na(temp$DBSCAN002nNoise)]
+  
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_total[i,5] <- est$xmin
+  Power_table_total[i,7] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_total[i,6] <-bs$p
+  
+  
+
+  x <- temp$DBSCAN002nClus[temp$DBSCAN002nClus!= 0 & !is.na(temp$DBSCAN002nClus)]
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_total[i,8] <- est$xmin
+  
+  Power_table_total[i,10] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_total[i,9] <-bs$p
+  
+}
+
+
+
+ 
+
+
+# Resident table 5
+
+Power_table_Resident <- data.frame(City = numeric(),
+                                   NP_Xmin  = numeric(), 
+                                   NP_Pvalue = numeric(),
+                                   NP_Alpha = numeric(),
+                                   NN_Xmin = numeric(),
+                                   NN_Pvalue  = numeric(),
+                                   NN_Alpha = numeric(),
+                                   NC_Xmin = numeric(),
+                                   NC_Pvalue  = numeric(),
+                                   NC_Alpha = numeric())
+
+i <-1
+for (i in 1: 10){
+  
+  
+  temp <- Summary_list_Res[[i]]
+  
+  x <- temp$DBSCAN002nPoiInClus[temp$DBSCAN002nPoiInClus!= 0 & !is.na(temp$DBSCAN002nPoiInClus)]
+  
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_Resident[i,2] <- est$xmin
+  Power_table_Resident[i,4] <- estimate_pars(m_pl, pars = NULL)[1]
+  m_pl$xmin <- est
+  
+  bs <- bootstrap_p(m_pl)
+  Power_table_Resident[i,3] <-bs$p
+  
+  x <- temp$DBSCAN002nNoise[temp$DBSCAN002nNoise!= 0 & !is.na(temp$DBSCAN002nNoise)]
+  
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_Resident[i,5] <- est$xmin
+  Power_table_Resident[i,7] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_Resident[i,6] <-bs$p
+  
+  
+  
+  x <- temp$DBSCAN002nClus[temp$DBSCAN002nClus!= 0 & !is.na(temp$DBSCAN002nClus)]
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_Resident[i,8] <- est$xmin
+  
+  Power_table_Resident[i,10] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_Resident[i,9] <-bs$p
+  
+}
+
+# Tourist table 5 
+Power_table_tourist <- data.frame(City = numeric(),
+                                   NP_Xmin  = numeric(), 
+                                   NP_Pvalue = numeric(),
+                                   NP_Alpha = numeric(),
+                                   NN_Xmin = numeric(),
+                                   NN_Pvalue  = numeric(),
+                                   NN_Alpha = numeric(),
+                                   NC_Xmin = numeric(),
+                                   NC_Pvalue  = numeric(),
+                                   NC_Alpha = numeric())
+
+i <-1
+for (i in 1: 10){
+  
+  
+  temp <- Summary_list_Tour[[i]]
+  
+  x <- temp$DBSCAN002nPoiInClus[temp$DBSCAN002nPoiInClus!= 0 & !is.na(temp$DBSCAN002nPoiInClus)]
+  
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_tourist[i,2] <- est$xmin
+  Power_table_tourist[i,4] <- estimate_pars(m_pl, pars = NULL)[1]
+  m_pl$xmin <- est
+  
+  bs <- bootstrap_p(m_pl)
+  Power_table_tourist[i,3] <-bs$p
+  
+  x <- temp$DBSCAN002nNoise[temp$DBSCAN002nNoise!= 0 & !is.na(temp$DBSCAN002nNoise)]
+  
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_tourist[i,5] <- est$xmin
+  Power_table_tourist[i,7] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_tourist[i,6] <-bs$p
+  
+  
+  
+  x <- temp$DBSCAN002nClus[temp$DBSCAN002nClus!= 0 & !is.na(temp$DBSCAN002nClus)]
+  m_pl <- conpl$new(x)
+  est = estimate_xmin(m_pl)
+  Power_table_tourist[i,8] <- est$xmin
+  
+  Power_table_tourist[i,10] <- estimate_pars(m_pl, pars = NULL)[1]
+  
+  m_pl$xmin <- est
+  bs <- bootstrap_p(m_pl)
+  Power_table_tourist[i,9] <-bs$p
+  
+}
+
+
+Tab_5 <- bind_cols(Power_table_tourist, Power_table_Resident  , Power_table_total  )
+
+
+
+# Table 6 -----------------------------------------------------------------
+# total
+tab_6_total <- data.frame(City = numeric(),
+                      Mean.Number.Clusters = numeric(), 
+                      SD.Clusters  = numeric(), 
+                      Mean.Point.Cluster  = numeric(), 
+                      SD.Point.Cluster = numeric(), 
+                      Mean.Noise.Point = numeric(),
+                      SD.Noise.Point = numeric(),
+                      Mean.Cluster.InCity = numeric(),
+                      SD.Cluster.InCity = numeric(),
+                      Mean.No.Clust=  numeric(),
+                      Mean.Points.ExamCity = numeric(),
+                      Mean.point.First.Large = numeric(),
+                      Mean.point.Second.Large = numeric(),
+                      Mean.No.noise.point = numeric(),
+                      Activity.In.Exam.City = numeric(),
+                      Activity.In.First = numeric(),
+                      Activity.In.Second = numeric())
+
+
+for ( i in 1:10) {
+  
+  temp <-summary_list [[i]]
+  tab_6_total[i,1] <- names(Data_AllTweets)[i]
+  tab_6_total[i,2] <- round(mean(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_total[i,3] <- round(sd(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_total[i,4] <- round(mean(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_total[i,5] <- round(sd(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_total[i,6] <- round(mean(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_total[i,7] <- round(sd(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_total[i,8] <- round(mean(temp$InCityClusters, na.rm = T),2)
+  tab_6_total[i,9] <- round(sd(temp$InCityClusters, na.rm = T),2)
+  tab_6_total[i,10] <-round(mean(temp$LargeClasses, na.rm = T),2)
+  tab_6_total[i,11] <-  round(mean(temp$NearCityNPoints, na.rm = T),2)
+  tab_6_total[i,12] <-   round(mean(temp$FirstLargerNPoints, na.rm = T),2)
+  tab_6_total[i,13] <-   round(mean(temp$SecondLargerNPoints, na.rm = T),2)
+  tab_6_total[i,14] <-   round(mean(temp$LargeClustersNoise, na.rm = T),2)
+  tab_6_total[i,15] <-   round(mean(temp$NearCityAreaSqM, na.rm = T),2)
+  tab_6_total[i,16] <- round(mean(temp$FirstLarAreaSqM, na.rm = T),2)
+  tab_6_total[i,17] <- round(mean(temp$SecLarAreaSqM, na.rm = T),2)
+
+}
+
+
+# Resident
+tab_6_resid <- data.frame(City = numeric(),
+                          Mean.Number.Clusters = numeric(), 
+                          SD.Clusters  = numeric(), 
+                          Mean.Point.Cluster  = numeric(), 
+                          SD.Point.Cluster = numeric(), 
+                          Mean.Noise.Point = numeric(),
+                          SD.Noise.Point = numeric(),
+                          Mean.Cluster.InCity = numeric(),
+                          SD.Cluster.InCity = numeric(),
+                          Mean.No.Clust=  numeric(),
+                          Mean.Points.ExamCity = numeric(),
+                          Mean.point.First.Large = numeric(),
+                          Mean.point.Second.Large = numeric(),
+                          Mean.No.noise.point = numeric(),
+                          Activity.In.Exam.City = numeric(),
+                          Activity.In.First = numeric(),
+                          Activity.In.Second = numeric())
+
+
+for ( i in 1:10) {
+  temp <-summary_list_Resid [[i]]
+  tab_6_resid[i,1] <- names(Data_AllTweets)[i]
+  tab_6_resid[i,2] <- round(mean(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_resid[i,3] <- round(sd(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_resid[i,4] <- round(mean(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_resid[i,5] <- round(sd(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_resid[i,6] <- round(mean(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_resid[i,7] <- round(sd(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_resid[i,8] <- round(mean(temp$InCityClusters, na.rm = T),2)
+  tab_6_resid[i,9] <- round(sd(temp$InCityClusters, na.rm = T),2)
+  tab_6_resid[i,10] <-round(mean(temp$LargeClasses, na.rm = T),2)
+  tab_6_resid[i,11] <-  round(mean(temp$NearCityNPoints, na.rm = T),2)
+  tab_6_resid[i,12] <-   round(mean(temp$FirstLargerNPoints, na.rm = T),2)
+  tab_6_resid[i,13] <-   round(mean(temp$SecondLargerNPoints, na.rm = T),2)
+  tab_6_resid[i,14] <-   round(mean(temp$LargeClustersNoise, na.rm = T),2)
+  tab_6_resid[i,15] <-   round(mean(temp$NearCityAreaSqM, na.rm = T),2)
+  tab_6_resid[i,16] <- round(mean(temp$FirstLarAreaSqM, na.rm = T),2)
+  tab_6_resid[i,17] <- round(mean(temp$SecLarAreaSqM, na.rm = T),2)
+}
+
+
+
+# Tourist
+tab_6_Tourist <- data.frame(City = numeric(),
+                          Mean.Number.Clusters = numeric(), 
+                          SD.Clusters  = numeric(), 
+                          Mean.Point.Cluster  = numeric(), 
+                          SD.Point.Cluster = numeric(), 
+                          Mean.Noise.Point = numeric(),
+                          SD.Noise.Point = numeric(),
+                          Mean.Cluster.InCity = numeric(),
+                          SD.Cluster.InCity = numeric(),
+                          Mean.No.Clust=  numeric(),
+                          Mean.Points.ExamCity = numeric(),
+                          Mean.point.First.Large = numeric(),
+                          Mean.point.Second.Large = numeric(),
+                          Mean.No.noise.point = numeric(),
+                          Activity.In.Exam.City = numeric(),
+                          Activity.In.First = numeric(),
+                          Activity.In.Second = numeric())
+
+
+for ( i in 1:10) {
+  temp <-summary_list_tourist [[i]]
+  tab_6_Tourist[i,1] <- names(Data_AllTweets)[i]
+  tab_6_Tourist[i,2] <- round(mean(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_Tourist[i,3] <- round(sd(temp$DBSCAN002nClus, na.rm = T),2)
+  tab_6_Tourist[i,4] <- round(mean(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_Tourist[i,5] <- round(sd(temp$DBSCAN002nPoiInClus, na.rm = T),2)
+  tab_6_Tourist[i,6] <- round(mean(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_Tourist[i,7] <- round(sd(temp$DBSCAN002nNoise, na.rm = T),2)
+  tab_6_Tourist[i,8] <- round(mean(temp$InCityClusters, na.rm = T),2)
+  tab_6_Tourist[i,9] <- round(sd(temp$InCityClusters, na.rm = T),2)
+  tab_6_Tourist[i,10] <-round(mean(temp$LargeClasses, na.rm = T),2)
+  tab_6_Tourist[i,11] <-  round(mean(temp$NearCityNPoints, na.rm = T),2)
+  tab_6_Tourist[i,12] <-   round(mean(temp$FirstLargerNPoints, na.rm = T),2)
+  tab_6_Tourist[i,13] <-   round(mean(temp$SecondLargerNPoints, na.rm = T),2)
+  tab_6_Tourist[i,14] <-   round(mean(temp$LargeClustersNoise, na.rm = T),2)
+  tab_6_Tourist[i,15] <-   round(mean(temp$NearCityAreaSqM, na.rm = T),2)
+  tab_6_Tourist[i,16] <- round(mean(temp$FirstLarAreaSqM, na.rm = T),2)
+  tab_6_Tourist[i,17] <- round(mean(temp$SecLarAreaSqM, na.rm = T),2)
+}
+
+
+# Table 7 -----------------------------------------------------------------
+
+tab_7_total <- data.frame(City = numeric(),
+                    InCity.Geotag = numeric(), 
+                    First.Geotag  = numeric(), 
+                    Sec.Geotag  = numeric(), 
+                    Noise.Geo = numeric())
+
+
+tab_7_resident <- data.frame(City = numeric(),
+                          InCity.Geotag = numeric(), 
+                          First.Geotag  = numeric(), 
+                          Sec.Geotag  = numeric(), 
+                          Noise.Geo = numeric())
+
+
+tab_7_tourist <- data.frame(City = numeric(),
+                             InCity.Geotag = numeric(), 
+                             First.Geotag  = numeric(), 
+                             Sec.Geotag  = numeric(), 
+                             Noise.Geo = numeric())
+
+
+for ( i in 1:10) {
+  
+  # total 
+  temp <-summary_list [[i]]
+  tab_7_total[i,1] <- names(Data_AllTweets)[i]
+  tab_7_total[i,2] <-round(mean(temp$InCity/temp$onlyGeo, na.rm = T),2 )
+  tab_7_total[i,3] <-round(mean(temp$FirstLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_total[i,4] <- round(mean(temp$SecondLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_total[i,5] <-round(mean(temp$LargeClustersNoise/temp$onlyGeo, na.rm = T),2 )
+  
+  # Resident 
+  temp <-summary_list_Resid [[i]]
+  tab_7_resident[i,1] <- names(Data_AllTweets)[i]
+  tab_7_resident[i,2] <-round(mean(temp$InCity/temp$onlyGeo, na.rm = T),2 )
+  tab_7_resident[i,3] <-round(mean(temp$FirstLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_resident[i,4] <- round(mean(temp$SecondLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_resident[i,5] <-round(mean(temp$LargeClustersNoise/temp$onlyGeo, na.rm = T),2 )
+  
+  # Tourist
+  temp <-summary_list_tourist [[i]]
+  tab_7_tourist[i,1] <- names(Data_AllTweets)[i]
+  tab_7_tourist[i,2] <-round(mean(temp$InCity/temp$onlyGeo, na.rm = T),2 )
+  tab_7_tourist[i,3] <-round(mean(temp$FirstLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_tourist[i,4] <- round(mean(temp$SecondLargerNPoints/temp$onlyGeo, na.rm = T),2 )
+  tab_7_tourist[i,5] <-round(mean(temp$LargeClustersNoise/temp$onlyGeo, na.rm = T),2 )
+
+}
+
+
+
+
+Table_7 <- bind_cols(table_AllData_7,table_Resid_7,table_Tourist_7 )
+
+print(Table_7)
+ 
+
+# Figures -----------------------------------------------------------------
+# Figure 1 ----------------------------------------------------------------
+# City map with black and white google background
+
+i <-1
+
+for ( i in 1:10){
+  
+  cat(as.character(Sys.time()), "Drawing Number",i, "\n") 
+   
+  s <-qmap(as.character(DrawingTitle[i]),color="bw" ,maptype = "roadmap", zoom = 10, legend = "topleft", messaging = FALSE)
+  
+  Temp_names <- names(Data_AllTweets[[i]])
+  Temp <- as.data.frame(Data_AllTweets[i])
+  names(Temp) <- names(Data_AllTweets[[i]])
+  
+  onlyGeoTagged <- Temp[Temp$latitude>s$data$lat[1] &
+                        Temp$latitude<s$data$lat[4]&
+                        Temp$longitude>s$data$lon[1]&
+                        Temp$longitude<s$data$lon[4]
+                      , ]
+  
+  x <- s + stat_density2d( aes(x = longitude, y = latitude, fill = ..level.., alpha = ..level..),  size = 0.01,
+    bins = 300, geom = 'polygon', data = onlyGeoTagged)+ 
+    scale_fill_viridis_c()+
+    guides(alpha ="none")
+   x <- x+scalebar(x.min = (s$data$lon[1]+0.0),
+                  x.max = (s$data$lon[4]-0.07),
+                  y.min = (s$data$lat[1]+0.03),
+                  y.max = (s$data$lat[4]-0.06),
+                  dist = 10,dd2km = TRUE, model = 'WGS84', location = "topright")
+  
+   saveNamePic <- paste((as.character(names(Data_AllTweets[[i]]))), ".pdf", sep = "")
+   ggsave(plot = last_plot(), filename  =   saveNamePic ,  width = 7.5, height = 7.5)
+}
+
+
+# Figure 2 ----------------------------------------------------------------
+# World Maps  
+
+### Function to regroup split lines and polygons
+# Takes dataframe, column with long and unique group variable, returns df with added column named group.regroup
+RegroupElements <- function(df, longcol, idcol){
+  g <- rep(1, length(df[,longcol]))
+  if (diff(range(df[,longcol])) > 300) { # check if longitude within group differs more than 300 deg, ie if element was split
+    d <- df[,longcol] > mean(range(df[,longcol])) # we use the mean to help us separate the extreme values
+    g[!d] <- 1 # some marker for parts that stay in place (we cheat here a little, as we do not take into account concave polygons)
+    g[d] <- 2 # parts that are moved
+  }
+  g <- paste(df[, idcol], g, sep=".") # attach to id to create unique group variable for the dataset
+  df$group.regroup <- g
+  df
+}
+
+### Function to close regrouped polygons
+# Takes dataframe, checks if 1st and last longitude value are the same, if not, inserts first as last and reassigns order variable
+ClosePolygons <- function(df, longcol, ordercol){
+  if (df[1,longcol] != df[nrow(df),longcol]) {
+    tmp <- df[1,]
+    df <- rbind(df,tmp)
+  }
+  o <- c(1: nrow(df)) # reassign the order variable
+  df[,ordercol] <- o
+  df
+}
+
+
+
+center <- 0
+i <- 1
+
+for ( i in 1:10) {
+  cat(as.character(Sys.time()), "Start City NO ",i, "\n") 
+  
+  Temp_names <- names(Data_AllTweets[[i]])
+  Temp <- as.data.frame(Data_AllTweets[i])
+  names(Temp) <- names(Data_AllTweets[[i]])
+  
+  onlyGeoTagged<- Temp[Temp$latitude!=0, ]
+  
+  worldmap <- map_data ("world")
+  worldmap$long.recenter <- ifelse(worldmap$long < center - 180 , 
+                                   worldmap$long + 360, worldmap$long)
+  
+  worldmap.rg <- ddply(worldmap, .(group), RegroupElements, "long.recenter", "group")
+  worldmap.cp <- ddply(worldmap.rg, .(group.regroup), ClosePolygons, "long.recenter", "order") 
+  
+  worldmap <- ggplot(aes(x = long.recenter, y = lat), data = worldmap.cp) + 
+    geom_polygon(aes(group = group.regroup) ,fill="#f9f9f9", colour = "grey65")+
+    scale_y_continuous(limits = c(-60, 85)) + 
+    coord_equal() + 
+    theme_bw() + 
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(), 
+          panel.border = element_rect(colour = "black"),
+          legend.position = "none")
+  worldmap<-worldmap+
+    stat_density2d(aes(x =longitude  , y = latitude, fill = ..level.., alpha = ..level..), 
+                   size = .1, bins = 300, geom = 'polygon', 
+                   data = onlyGeoTagged)+  
+    guides(alpha = FALSE)+ 
+    scale_fill_gsea(reverse = TRUE)
+
+  
+  saveNamePic <- paste((as.character(names(Data_AllTweets[[i]]))), ".pdf", sep = "")
+  ggsave(plot = last_plot(), filename  =   saveNamePic ,  width = 9.2, height = 4 )
+  
+  
+}
+
+
+
+# Figure 3 ----------------------------------------------------------------
+# Temporal maps
+
+i <- 1
+
+for(i in 1:10){
+  cat(as.character(Sys.time()), "Drawing Number",i, "\n") 
+  
+  Temp_names <- names(Data_AllTweets[[i]])
+  Temp <- as.data.frame(Data_AllTweets[i])
+  names(Temp) <- names(Data_AllTweets[[i]])
+  
+  myD2 <- ddply(Temp, .(HourOfDay, DayOfWeek, geotagged), summarise,  nTweets = length(TweetID), .progress="text")
+  myD2$geotagged<-as.character(myD2$geotagged)
+  myD2$geotagged<-gsub("1", "geo-tagged", myD2$geotagged)
+  myD2$geotagged<-gsub("0", "not geo-tagged", myD2$geotagged)
+  myD2$StartDay<-gsub("0", "Sun", myD2$DayOfWeek)
+  myD2$StartDay<-gsub("1", "Mon", myD2$StartDay)
+  myD2$StartDay<-gsub("2", "Tue", myD2$StartDay)
+  myD2$StartDay<-gsub("3", "Wed", myD2$StartDay)
+  myD2$StartDay<-gsub("4", "Thu", myD2$StartDay)
+  myD2$StartDay<-gsub("5", "Fri", myD2$StartDay)
+  myD2$StartDay<-gsub("6", "Sat", myD2$StartDay)
+  myD2$StartDay<-factor(myD2$StartDay, levels=c("Mon", "Tue","Wed", "Thu", "Fri", "Sat", "Sun"))
+  
+  
+  myD2 %>% 
+    ggplot( aes(x=HourOfDay, y=nTweets))+
+    geom_bar(stat="identity", width=.5)+
+    facet_grid(geotagged ~ StartDay)+
+    xlab("Hour of Day")+
+    ylab("Number of Tweets")+
+    ggtitle(as.character(DrawingTitle[i]))+
+    scale_fill_grey(end = 0.4)+
+    theme(legend.position="none",
+          strip.text.y = element_text(size = 12),
+          axis.text.x = element_text(size = 9))+
+    scale_x_continuous(breaks = c(0,6,12,18,24))
+  
+  PlotNam<- as.character(names(Data_AllTweets[[i]]))
+  PlotNam<-paste(PlotNam, "_Temporal.pdf", sep = "")
+  ggsave(plot = last_plot(), filename  =  PlotNam , height=4, width=8 )
+  
+  cat(as.character(Sys.time()), "Finish Drawing Number",i, "\n") 
+  
+}
+
+# Figure 4 ----------------------------------------------------------------
+i<-1
+for( i in 1:10){
+  CitiesTweets[[i]] %>% 
+    dplyr::select(PerInside,userID) %>% 
+    ggplot()+
+    geom_histogram(aes(PerInside), color= "black", size =0.3)+
+    ggtitle(as.character(DrawingTitle[i]))+
+    labs(y= "Frequency", x = "% Percentage of Geo-tagged Tweets Inside the City")+
+    theme_bw()
+  PlotNam<-(as.character(DrawingTitle[i]))
+  PlotNam<-paste(PlotNam, "_IncityHisto.pdf", sep = "")
+  ggsave(plot = last_plot(), filename  =   PlotNam , height=4, width=8 )
+  
+}
+
+
+
+
